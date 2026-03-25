@@ -1,6 +1,7 @@
 import requests
 import os
 import json
+import time
 from dotenv import load_dotenv
 from datetime import date, timedelta
 import subprocess
@@ -18,24 +19,49 @@ def ensure_ollama_ready():
         print("Installing Ollama via Homebrew...")
         subprocess.run(["brew", "install", "ollama"])
 
-    # 3. Ensure Ollama server is running
-    # We try to ping it; if it fails, we start it in the background
-    try:
-        requests.get("http://localhost:11434/api/tags")
-    except requests.exceptions.ConnectionError:
-        print("Starting Ollama server...")
-        subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(5) # Give it a few seconds to wake up
+    # 3. Ensure Ollama server is running (with retry logic)
+    server_ready = False
+    for attempt in range(10):
+        try:
+            requests.get("http://localhost:11434/api/tags", timeout=2)
+            server_ready = True
+            break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if attempt == 0:
+                print("Starting Ollama server...")
+                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(2)
+    
+    if not server_ready:
+        print("Warning: Ollama server may not be ready")
 
     # 4. Pull the model
-    print("Ensuring llama3.2:1b is downloaded...")
-    subprocess.run(["ollama", "pull", "llama3.2:1b"], capture_output=True)
+    print("Ensuring llama3.2:3b is downloaded...")
+    subprocess.run(["ollama", "pull", "llama3.2:3b"], capture_output=True)
+
+# --- CLEANUP FUNCTION ---
+def cleanup_ollama():
+    print("\n🧹 Cleaning up Ollama...")
+    try:
+        # Unload the model from memory (frees GPU/RAM immediately)
+        requests.post("http://localhost:11434/api/generate", 
+                      json={"model": "llama3.2:3b", "keep_alive": 0})
+        print("Model unloaded from memory.")
+    except:
+        pass
+    
+    # Kill Ollama server and app completely
+    subprocess.run(["pkill", "-9", "ollama"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "Ollama.app"], capture_output=True)
+    print("Ollama server stopped.")
 
 # Run the setup before importing the ollama library
 ensure_ollama_ready()
 import ollama # Now safe to import
  
 load_dotenv()
+#this is the core veriable !!!!!! dude it is like the input for the netsuit fuction !!
+timesheets_entry = None
 
 WORKSPACE = os.getenv("WORKSPACE")
 REPO_SLUG = os.getenv("REPO_SLUG")
@@ -92,12 +118,19 @@ if recent_commits:
 
     print("\n--- Generating Timesheet Sentence ---")
     try:
-        ai_response = ollama.chat(model='llama3.2:1b', messages=[
-            {'role': 'user', 'content': prompt},
-        ])
+        ai_response = ollama.chat(
+            model='llama3.2:3b',
+            messages=[{'role': 'user', 'content': prompt}],
+            options={'temperature': 0}
+        )
         # We strip any unwanted quotes the AI might add
-        print(ai_response['message']['content'].strip('"'))
+        timesheets_entry = ai_response['message']['content'].strip('"')
+        print(timesheets_entry)
     except Exception as e:
-        print(f"{PROJECT_ID} : {PROJECT_NAME} - development and bugfixes: {clean_msgs}")
+        timesheets_entry = f"{PROJECT_ID} : {PROJECT_NAME} - development and bugfixes: {clean_msgs}"
+        print(timesheets_entry)
 else:
-    print(f"{PROJECT_ID} : Working on project {PROJECT_NAME} development and bugfixes.")
+    timesheets_entry = f"{PROJECT_ID} : Working on project {PROJECT_NAME} development and bugfixes."
+    print(timesheets_entry)
+# Cleanup: stop Ollama to free system resources
+cleanup_ollama()
